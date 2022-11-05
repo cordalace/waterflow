@@ -3,11 +3,11 @@ package resolver
 import "time"
 
 func (r *Resolver) WithOptions(opts ...Option) *Resolver {
-	clone := *r
+	clone := r.copy()
 	for _, opt := range opts {
-		opt(&clone)
+		opt(clone)
 	}
-	return &clone
+	return clone
 }
 
 type Option func(r *Resolver)

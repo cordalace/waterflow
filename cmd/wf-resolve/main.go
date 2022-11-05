@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"time"
 
 	"github.com/cordalace/waterflow/internal/resolver"
@@ -11,7 +13,6 @@ import (
 )
 
 type args struct {
-	gateway          string
 	numWorkers       int
 	timeout          time.Duration
 	bootstrapServers []string
@@ -19,30 +20,32 @@ type args struct {
 }
 
 func parseArgs() *args {
-	gateway := pflag.String("gateway", "192.168.0.1", "route gateway IP address")
 	numWorkers := pflag.Int("workers", resolver.DefaultNumWorkers(), "number of workers")
 	timeout := pflag.Float64("timeout", resolver.DefaultTimeout().Seconds(), "timeout for DNS requests (in seconds)")
-	bootstrapServers := pflag.StringArray("bootstrap", []string{"1.1.1.1", "1.0.0.1"}, "bootstrap DNS servers")
-	upstreamServers := pflag.StringArray("upstream", []string{"https://1.1.1.1/dns-query", "https://1.0.0.1/dns-query"}, "upstream DNS servers")
+	bootstrapServers := pflag.StringArray("bootstrap", resolver.DefaultBootstrapServers(), "bootstrap DNS servers")
+	upstreamServers := pflag.StringArray("upstream", resolver.DefaultUpstreamServers(), "upstream DNS servers")
 
 	pflag.Parse()
 
 	return &args{
-		gateway:          *gateway,
 		numWorkers:       *numWorkers,
-		timeout:          time.Duration(*timeout * 1e9),
+		timeout:          time.Duration(*timeout * 1e09),
 		bootstrapServers: *bootstrapServers,
 		upstreamServers:  *upstreamServers,
 	}
 }
 
-func main() {
+func mainWithExitCode() int {
 	args := parseArgs()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	domains := make(chan string)
 	go func() {
-		if err := rublacklist.GetDomains(domains); err != nil {
-			panic(err)
+		if err := rublacklist.GetDomains(ctx, domains); err != nil {
+			log.Printf("error receiving domains: %v", err)
+			return
 		}
 	}()
 
@@ -55,15 +58,27 @@ func main() {
 		resolver.WithUpstreamServers(args.upstreamServers),
 	)
 	if err := r.Init(); err != nil {
-		panic(err)
+		log.Printf("error initializing resolver: %v", err)
+		return 1
 	}
-	go r.Resolve(context.Background(), domains, resolveResults)
+	go r.Resolve(ctx, domains, resolveResults)
 
+	uniqueIPs := make(map[string]struct{})
 	for result := range resolveResults {
 		for _, ip := range result.IPs {
 			if ip.To4() != nil {
-				fmt.Printf("route ADD %s MASK 255.255.255.255 %s\n", ip.String(), args.gateway)
+				ipString := ip.String()
+				if _, ok := uniqueIPs[ipString]; !ok {
+					uniqueIPs[ipString] = struct{}{}
+					fmt.Println(ipString)
+				}
 			}
 		}
 	}
+
+	return 0
+}
+
+func main() {
+	os.Exit(mainWithExitCode())
 }

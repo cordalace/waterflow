@@ -1,14 +1,20 @@
 package rublacklist
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 )
 
-func GetDomains(domains chan<- string) error {
+func GetDomains(ctx context.Context, domains chan<- string) error {
 	url := "https://reestr.rublacklist.net/api/v3/domains/"
-	resp, err := http.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
