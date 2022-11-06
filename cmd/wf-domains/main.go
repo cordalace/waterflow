@@ -3,9 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/cordalace/waterflow/internal/rublacklist"
 	"github.com/spf13/pflag"
+)
+
+const (
+	initialDomainsBufSize = 500000 // 4915200
 )
 
 type args struct {
@@ -20,28 +28,57 @@ func parseArgs() *args {
 	return &args{nolazy: *nolazy}
 }
 
-func main() {
-	args := parseArgs()
+func maybeBufferDomains(ctx context.Context, nolazy bool, lazyDomains <-chan string) <-chan string {
+	if nolazy {
+		output := make(chan string)
 
-	domains := make(chan string)
-	go func() {
-		if err := rublacklist.GetDomains(context.Background(), domains); err != nil {
-			panic(err)
-		}
-	}()
-
-	if args.nolazy {
-		bufferedDomainList := make([]string, 0)
-		for domain := range domains {
+		bufferedDomainList := make([]string, 0, initialDomainsBufSize)
+		for domain := range lazyDomains {
 			bufferedDomainList = append(bufferedDomainList, domain)
 		}
 
-		for _, domain := range bufferedDomainList {
-			fmt.Println(domain)
+		go func() {
+			for _, domain := range bufferedDomainList {
+				select {
+				case <-ctx.Done():
+					close(output)
+				default:
+					output <- domain
+				}
+			}
+			close(output)
+		}()
+
+		return output
+	}
+
+	return lazyDomains
+}
+
+func main() {
+	args := parseArgs()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGPIPE)
+
+	lazyDomains := make(chan string)
+	go func() {
+		if err := rublacklist.GetDomains(ctx, lazyDomains); err != nil {
+			log.Fatalf("error receiving domains: %v", err)
 		}
-	} else {
+	}()
+
+	domains := maybeBufferDomains(ctx, args.nolazy, lazyDomains)
+
+	go func() {
 		for domain := range domains {
 			fmt.Println(domain)
 		}
-	}
+		done <- syscall.SIGTERM
+	}()
+
+	<-done
+	cancel()
 }
